@@ -5,6 +5,9 @@
 #include <iostream>
 #include <filesystem>
 #include <sstream>
+#include <map>
+#include <set>
+#include <fstream>
 
 #pragma comment(lib, "Dbghelp.lib")
 
@@ -56,6 +59,147 @@ std::wstring FindPdbFileByBaseName(const std::wstring& PdbPath)
     return L"";
 }
 
+bool UpdateIniSections(const std::wstring& IniPath, const std::map<std::wstring, std::map<std::wstring, std::wstring>>& UpdatedSections)
+{
+    std::wstring TempPath = IniPath + L".tmp";
+    std::wofstream TempFile(TempPath, std::ios::trunc);
+
+    if (!TempFile.is_open())
+    {
+        printf_s("[-] Failed to create temporary file! :( Path: %ls\n", TempPath.c_str());
+
+        return false;
+    }
+
+    std::wifstream IniFile(IniPath);
+
+    std::set<std::wstring> ProcessedSections;
+    
+    std::wstring CurrentSection;
+
+    bool bInSectionToSkip = false;
+    bool bFirstSectionWritten = false;
+    bool bLastLineWasSection = false;
+    bool bFileExists = IniFile.is_open();
+
+    if (bFileExists)
+    {
+        std::wstring Line;
+
+        while (std::getline(IniFile, Line))
+        {
+            if (Line.size() > 2 && Line[0] == L'[' && Line.back() == L']')
+            {
+                CurrentSection = Line.substr(1, Line.size() - 2);
+                bool bIsUpdatedSection = (UpdatedSections.find(CurrentSection) != UpdatedSections.end());
+
+                if (bIsUpdatedSection)
+                {
+                    if (bFirstSectionWritten)
+                        TempFile << L"\n";
+
+                    TempFile << L"[" << CurrentSection << L"]\n";
+
+                    for (const auto& [Key, Value] : UpdatedSections.at(CurrentSection))
+                        TempFile << Key << L"=" << Value << L"\n";
+
+                    bInSectionToSkip = true;
+                    bFirstSectionWritten = true;
+                    bLastLineWasSection = true;
+
+                    ProcessedSections.insert(CurrentSection);
+
+                    continue;
+                }
+
+                if (bFirstSectionWritten && !bLastLineWasSection)
+                    TempFile << L"\n";
+
+                TempFile << Line << L"\n";
+                bLastLineWasSection = true;
+                bInSectionToSkip = false;
+            }
+            else
+            {
+                if (!Line.empty() && !std::all_of(Line.begin(), Line.end(), iswspace))
+                    bLastLineWasSection = false;
+
+                if (bInSectionToSkip)
+                    continue;
+
+                TempFile << Line << L"\n";
+            }
+        }
+
+        IniFile.close();
+    }
+
+    bool bIsAddedNewSection = false;
+
+    for (const auto& [Section, Values] : UpdatedSections)
+    {
+        if (ProcessedSections.find(Section) == ProcessedSections.end())
+        {
+            if (bFirstSectionWritten || bIsAddedNewSection)
+                TempFile << L"\n";
+
+            TempFile << L"[" << Section << L"]\n";
+
+            for (const auto& [Key, Value] : Values)
+                TempFile << Key << L"=" << Value << L"\n";
+
+            bIsAddedNewSection = true;
+            bFirstSectionWritten = true;
+        }
+    }
+
+    TempFile.close();
+
+    if (!bFirstSectionWritten)
+    {
+        _wremove(TempPath.c_str());
+        printf_s("[-] Nothing to write to INI file\n");
+
+        return false;
+    }
+
+    if (!MoveFileExW(TempPath.c_str(), IniPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
+    {
+        DWORD Error = GetLastError();
+
+        _wremove(TempPath.c_str());
+
+        if (Error == ERROR_ALREADY_EXISTS)
+        {
+            printf_s("[!] ERROR_ALREADY_EXISTS: Attempting fallback method...\n");
+
+            if (DeleteFileW(IniPath.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND)
+            {
+                if (MoveFileW(TempPath.c_str(), IniPath.c_str()))
+                {
+                    printf_s("[+] Successfully updated (fallback method): %ls\n", IniPath.c_str());
+
+                    return true;
+                }
+            }
+        }
+
+        LPVOID lpMsgBuf;
+        
+        FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, Error,
+            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPWSTR)&lpMsgBuf, 0, NULL);
+
+        printf_s("[-] Failed to replace INI file! :( Path: %ls -> %ls (Error: %lu - %ls)\n", TempPath.c_str(), IniPath.c_str(), Error, (LPWSTR)lpMsgBuf);
+        LocalFree(lpMsgBuf);
+
+        return false;
+    }
+
+    printf_s("[+] Successfully updated: %ls\n", IniPath.c_str());
+
+    return true;
+}
+
 int wmain(int argc, wchar_t* argv[])
 {
     setlocale(LC_ALL, ".UTF-8");
@@ -83,19 +227,7 @@ int wmain(int argc, wchar_t* argv[])
     bool AllSuccess = true;
     bool bIsFirstSection = true;
 
-    std::wstring OffsetsPath = L"offsets.ini";
-    FILE* OffsetsFile = nullptr;
-    
-    _wfopen_s(&OffsetsFile, OffsetsPath.c_str(), L"wt, ccs=UTF-8");
-
-    if (OffsetsFile)
-    {
-        printf_s("[*] Writing offsets to: %ls\n", OffsetsPath.c_str());
-    }
-    else
-    {
-        printf_s("[-] Failed to create config file: %ls (Error: %d)\n", OffsetsPath.c_str(), GetLastError());
-    }
+    std::map<std::wstring, std::map<std::wstring, std::wstring>> UpdatedSections;
 
     for (int i = 1; i < argc; i += 3)
     {
@@ -174,21 +306,7 @@ int wmain(int argc, wchar_t* argv[])
             printf_s("[+] Found symbol '%ls' -> Offset: %I64u | RVA: 0x%I64x\n", Sym.c_str(),
                 Offset, SymInfoPackage.si.Address);
 
-            if (!OffsetsFile)
-                continue;
-
-            if (!bIsSectionWritten)
-            {
-                if (!bIsFirstSection)
-                    fwprintf_s(OffsetsFile, L"\n");
-
-                fwprintf(OffsetsFile, L"[%ls]\n", std::filesystem::path(argv[i + 1]).filename().c_str());
-
-                bIsSectionWritten = true;
-                bIsFirstSection = false;
-            }
-
-            fwprintf(OffsetsFile, L"%ls=%I64u\n", Sym.c_str(), Offset);
+            UpdatedSections[std::filesystem::path(argv[i + 1]).filename().c_str()][Sym] = std::to_wstring(Offset);
         }
 
         printf_s("\n");
@@ -196,6 +314,16 @@ int wmain(int argc, wchar_t* argv[])
 
         if (!bIsFileSuccess)
             AllSuccess = false;
+    }
+
+    if (!UpdatedSections.empty())
+    {
+        if (!UpdateIniSections(L"offsets.ini", UpdatedSections))
+            printf_s("[-] Failed to update offsets.ini! :(\n");
+    }
+    else
+    {
+        printf_s("[+] All offsets is up to date!\n");
     }
 
     SymCleanup(GetCurrentProcess());

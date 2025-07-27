@@ -218,7 +218,7 @@ int HandleFile(const std::filesystem::path& FilePath, std::wstring& NewPDBName, 
         return 0;
 
     std::filesystem::path DownloadedPDBPath = FindPdbFileByBaseName(std::wstring(PDBFileName.begin(), PDBFileName.end()));
-    std::wstring DownloadedPDBName = DownloadedPDBPath.stem();
+    std::wstring DownloadedPDBName = DownloadedPDBPath.filename();
 
     if (DownloadedPDBName.empty())
         return 2;
@@ -228,7 +228,7 @@ int HandleFile(const std::filesystem::path& FilePath, std::wstring& NewPDBName, 
 
     if (std::wstring(FullHex.begin(), FullHex.end()) != DownloadedPDBName.substr(FirstPos + 1, LastPos - FirstPos - 1))
     {
-        OldFiles.push_back(PDBPath.wstring());
+        OldFiles.push_back(DownloadedPDBPath.wstring());
 
         return 1;
     }
@@ -293,13 +293,29 @@ int wmain(int argc, wchar_t* argv[])
 
     if (DownloadResult != 0 && !OldFiles.empty())
     {
-        printf_s("[-] Old files will not be removed!\n");
+        printf_s("[-] Update faild while downloading, old files will not be removed! Code: %d :(\n", DownloadResult);
 
-        return 2;
+        return DownloadResult;
     }
 
     for (const std::wstring& OldFile : OldFiles)
+    {
+        printf_s("[*] Removing: %ls", OldFile.c_str());
         std::filesystem::remove(OldFile);
+    }
 
-    return _wsystem(ParserCmd.c_str());
+    int ParseResult = _wsystem(ParserCmd.c_str());
+
+    if (ParseResult != 0)
+    {
+        printf_s("[-] Update faild while parsing with! :( Code: %d\n", ParseResult);
+    }
+    else
+    {
+        printf_s("\n[+] Successfully updated!\n");
+    }
+
+    printf("------\n");
+
+    return ParseResult;
 }
