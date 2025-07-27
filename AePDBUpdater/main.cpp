@@ -1,10 +1,8 @@
 #include <Windows.h>
-#include <string>
-#include <urlmon.h>
-#include <iomanip>
 #include <vector>
-
-#pragma comment(lib, "urlmon.lib")
+#include <string>
+#include <sstream>
+#include <filesystem>
 
 struct CV_INFO_PDB70
 {
@@ -14,17 +12,6 @@ struct CV_INFO_PDB70
     char PdbFileName[1];
 };
 
-std::wstring GetCurrentAppFolder()
-{
-    wchar_t Buffer[1024];
-
-    GetModuleFileNameW(NULL, Buffer, 1024);
-
-    size_t Pos = std::wstring(Buffer).find_last_of(L"\\/");
-
-    return std::wstring(Buffer).substr(0, Pos + 1);
-}
-
 std::string GuidToString(const GUID& guid)
 {
     char Buffer[33];
@@ -33,6 +20,17 @@ std::string GuidToString(const GUID& guid)
         guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3], guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
 
     return std::string(Buffer, 32);
+}
+
+std::wstring GenerateFileName(std::string FileName, const std::string& FullHex)
+{
+    size_t Pos = FileName.rfind(".pdb");
+    std::string Result;
+
+    FileName = FileName.substr(0, Pos);
+    Result = FileName + "_" + FullHex + ".pdb";
+
+    return std::wstring(Result.begin(), Result.end());
 }
 
 void CleanupResources(void* pBase, HANDLE hMapping, HANDLE hFile)
@@ -47,33 +45,49 @@ void CleanupResources(void* pBase, HANDLE hMapping, HANDLE hFile)
         CloseHandle(hFile);
 }
 
-std::wstring GenerateFileName(std::string FileName, const std::string& FullHex)
+std::wstring FindPdbFileByBaseName(const std::wstring& PdbPath)
 {
-    size_t Pos = FileName.rfind(".pdb");
-    std::string Result;
+    std::filesystem::path Path(PdbPath);
+    std::wstring BaseName = Path.stem().wstring();
+    std::filesystem::path Dir = Path.parent_path();
 
-    FileName = FileName.substr(0, Pos);
-    Result = FileName + "_" + FullHex + ".pdb";
+    if (Dir.empty())
+        Dir = std::filesystem::current_path() / L"Symbols";
 
-    return std::wstring(Result.begin(), Result.end());
+    for (const auto& entry : std::filesystem::directory_iterator(Dir))
+    {
+        if (entry.is_regular_file())
+        {
+            std::wstring fileName = entry.path().filename().wstring();
+
+            if (fileName.size() > BaseName.size() + 1 &&
+                fileName.substr(0, BaseName.size() + 1) == BaseName + L"_" &&
+                _wcsicmp(fileName.substr(fileName.size() - 4).c_str(), L".pdb") == 0)
+            {
+                return entry.path().wstring();
+            }
+        }
+    }
+
+    return L"";
 }
 
-int HandleFile(const wchar_t* FilePath)
+int HandleFile(const std::filesystem::path& FilePath, std::wstring& NewPDBName, std::vector<std::wstring>& OldFiles)
 {
-    if (GetFileAttributesW(FilePath) == INVALID_FILE_ATTRIBUTES)
+    if (!std::filesystem::exists(FilePath))
     {
         printf_s("[-] File not found! :(\n\n");
 
-        return 2;
+        return 3;
     }
 
-    HANDLE hFile = CreateFileW(FilePath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    HANDLE hFile = CreateFileW(FilePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
 
     if (hFile == INVALID_HANDLE_VALUE)
     {
         printf_s("[-] CreateFile failed! :(\n\n");
 
-        return 3;
+        return 4;
     }
 
     HANDLE hMapping = CreateFileMapping(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
@@ -83,7 +97,7 @@ int HandleFile(const wchar_t* FilePath)
         CleanupResources(nullptr, nullptr, hFile);
         printf_s("[-] CreateFileMapping failed! :( Code: %d\n\n", GetLastError());
 
-        return 4;
+        return 5;
     }
 
     void* pBase = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
@@ -93,7 +107,7 @@ int HandleFile(const wchar_t* FilePath)
         CleanupResources(nullptr, hMapping, hFile);
         printf_s("[-] MapViewOfFile failed! :( Code: %d\n\n", GetLastError());
 
-        return 5;
+        return 6;
     }
 
     PIMAGE_DOS_HEADER DosHeader = static_cast<PIMAGE_DOS_HEADER>(pBase);
@@ -103,7 +117,7 @@ int HandleFile(const wchar_t* FilePath)
         CleanupResources(pBase, hMapping, hFile);
         printf_s("[-] Not a valid PE file! :(\n\n");
 
-        return 6;
+        return 7;
     }
 
     PIMAGE_NT_HEADERS NtHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE*>(pBase) + DosHeader->e_lfanew);
@@ -113,7 +127,7 @@ int HandleFile(const wchar_t* FilePath)
         CleanupResources(pBase, hMapping, hFile);
         printf_s("[-] Not a valid PE file (NT signature)! :(\n\n");
 
-        return 7;
+        return 8;
     }
 
     DWORD DebugDirRVA = NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
@@ -124,7 +138,7 @@ int HandleFile(const wchar_t* FilePath)
         CleanupResources(pBase, hMapping, hFile);
         printf_s("[-] No debug directory found! :(\n\n");
 
-        return 8;
+        return 9;
     }
 
     PIMAGE_DEBUG_DIRECTORY DebugDir = nullptr;
@@ -146,12 +160,12 @@ int HandleFile(const wchar_t* FilePath)
         CleanupResources(pBase, hMapping, hFile);
         printf_s("[-] Debug directory section not found! :(\n\n");
 
-        return 9;
+        return 10;
     }
 
     CV_INFO_PDB70* CvInfo = nullptr;
     char* PDBNamePtr = nullptr;
-    GUID Guid = { 0 };
+    GUID Guid = {0};
     DWORD Age = 0;
     std::string PDBFullName;
 
@@ -180,10 +194,9 @@ int HandleFile(const wchar_t* FilePath)
         CleanupResources(pBase, hMapping, hFile);
         printf_s("[-] No CodeView debug information found! :(\n\n");
 
-        return 10;
+        return 11;
     }
 
-    printf_s("[+] PDB info found! Name: %s\n", PDBFullName.c_str());
     CleanupResources(pBase, hMapping, hFile);
 
     size_t Pos = PDBFullName.find_last_of("\\/");
@@ -193,58 +206,95 @@ int HandleFile(const wchar_t* FilePath)
 
     sprintf_s(AgeBuffer, "%X", Age);
 
-    std::string Url = "http://msdl.microsoft.com/download/symbols/";
     std::string FullHex = GuidToString(Guid) + AgeBuffer;
-    Url += PDBFileName + "/" + FullHex + "/" + PDBFileName;
 
-    std::wstring SaveDir = GetCurrentAppFolder() + L"Symbols\\";
+    std::wstring FileName = GenerateFileName(PDBFileName, FullHex);
 
-    CreateDirectoryW(SaveDir.c_str(), nullptr);
+    std::filesystem::path PDBPath = std::filesystem::current_path() / L"Symbols" / FileName;
 
-    std::wstring UrlW(Url.begin(), Url.end());
-    std::wstring SavePath = SaveDir + GenerateFileName(PDBFileName, FullHex);
+    NewPDBName = FileName;
 
-    printf_s("[*] Downloading: %ls\n", UrlW.c_str());
+    if (std::filesystem::exists(PDBPath))
+        return 0;
 
-    HRESULT hResult = URLDownloadToFileW(nullptr, UrlW.c_str(), SavePath.c_str(), 0, nullptr);
+    std::filesystem::path DownloadedPDBPath = FindPdbFileByBaseName(std::wstring(PDBFileName.begin(), PDBFileName.end()));
+    std::wstring DownloadedPDBName = DownloadedPDBPath.stem();
 
-    if (hResult == S_OK)
+    if (DownloadedPDBName.empty())
+        return 2;
+
+    size_t FirstPos = DownloadedPDBName.find_last_of('_');
+    size_t LastPos = DownloadedPDBName.find(L".pdb");
+
+    if (std::wstring(FullHex.begin(), FullHex.end()) != DownloadedPDBName.substr(FirstPos + 1, LastPos - FirstPos - 1))
     {
-        wprintf_s(L"[*] Saving to: %ls\n[+] Downloaded successfully!\n\n", SavePath.c_str());
-    }
-    else
-    {
-        printf_s("[-] Download failed! :( Code: 0x%X\n\n", static_cast<unsigned long>(hResult));
+        OldFiles.push_back(PDBPath.wstring());
+
+        return 1;
     }
 
-    return 0;
+    return 12;
 }
 
 int wmain(int argc, wchar_t* argv[])
 {
     setlocale(LC_ALL, ".UTF-8");
-    printf_s("\n------\nPDB downloader by Aeterts\n\n");
+    printf_s("\n------\nPDB updater by Aeterts\n\n");
 
-    if (argc < 2)
+    if (argc < 3 || argc % 2 != 1)
     {
-        printf_s("[!] Usage: %ls \"Path_to_PE_files\"\n", argv[0]);
+        printf_s("[!] Usage: %ls \"Path_to_PE_file1\" \"Symbol1, Symbol2, ...\" \"Path_to_PE_file2\" \"Symbol1, Symbol2, ...\"...\n", argv[0]);
 
         return 1;
     }
 
-    int Result = 0;
+    std::wstring DownloaderCmd = L"AePDBDownloader.exe";
+    std::wstring ParserCmd = L"AePDBParser.exe";
 
-    for (int i = 1; i < argc; i++)
+    std::vector<std::wstring> OldFiles;
+
+    bool bNeedUpdate = false;
+
+    for (int i = 1; i < argc; i += 2)
     {
-        printf_s("[*] Processing %ls file...\n", argv[i]);
+        std::filesystem::path PEPath(argv[i]);
 
-        Result = HandleFile(argv[i]);
+        std::wstring NewPDBName;
 
-        if (Result != 0)
-            break;
+        int CheckCode = HandleFile(PEPath, NewPDBName, OldFiles);
+        bool bUpdateCmd = false;
+
+        switch (CheckCode)
+        {
+        case 0: printf_s("[+] PDB for %ls is up to date!\n", PEPath.filename().c_str()); break;
+        case 1: printf_s("[!] PDB for %ls need update!\n", PEPath.filename().c_str()); bUpdateCmd = true; break;
+        case 2: printf_s("[!] PDB for %ls not exist!\n", PEPath.filename().c_str()); bUpdateCmd = true; break;
+        default: printf_s("[!] Some error occured while check for update! Code: %d\n", CheckCode); break;
+        }
+
+        if (bUpdateCmd)
+        {
+            bNeedUpdate = true;
+
+            DownloaderCmd += L" \"" + PEPath.wstring() + L"\"";
+            ParserCmd += L" \"" + NewPDBName + L"\"" + L" \"" + PEPath.wstring() + L"\"" + L" \"" + argv[i + 1] + L"\"";
+        }
     }
 
-    printf_s("------\n");
+    if (!bNeedUpdate)
+        return 0;
 
-    return Result;
+    int DownloadResult = _wsystem(DownloaderCmd.c_str());
+
+    if (DownloadResult != 0 && !OldFiles.empty())
+    {
+        printf_s("[-] Old files will not be removed!\n");
+
+        return 2;
+    }
+
+    for (const std::wstring& OldFile : OldFiles)
+        std::filesystem::remove(OldFile);
+
+    return _wsystem(ParserCmd.c_str());
 }

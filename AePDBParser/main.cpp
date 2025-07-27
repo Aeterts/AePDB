@@ -58,11 +58,12 @@ std::wstring FindPdbFileByBaseName(const std::wstring& PdbPath)
 
 int wmain(int argc, wchar_t* argv[])
 {
+    setlocale(LC_ALL, ".UTF-8");
     printf_s("\n------\nPDB parser by Aeterts\n\n");
 
-    if (argc < 3 || argc % 2 != 1)
+    if (argc < 4 || (argc - 1) % 3 != 0)
     {
-        printf_s("[!] Usage: %ls \"Path_to_PDB_file1\" \"Symbol1, Symbol2, ...\" \"Path_to_PDB_file2\" \"Symbol1, Symbol2, ...\"...\n", argv[0]);
+        printf_s("[!] Usage: %ls \"Path_to_PDB_file1\" \"PE_file_name1\" \"Symbol1, Symbol2, ...\" \"Path_to_PDB_file2\" \"PE_file_name2\" \"Symbol1, Symbol2, ...\"...\n", argv[0]);
 
         return 1;
     }
@@ -80,20 +81,37 @@ int wmain(int argc, wchar_t* argv[])
     SymSetOptions(SymOptions);
 
     bool AllSuccess = true;
+    bool bIsFirstSection = true;
 
-    for (int i = 1; i < argc; i += 2)
+    std::wstring OffsetsPath = L"offsets.ini";
+    FILE* OffsetsFile = nullptr;
+    
+    _wfopen_s(&OffsetsFile, OffsetsPath.c_str(), L"wt, ccs=UTF-8");
+
+    if (OffsetsFile)
     {
-        std::wstring PdbPath = argv[i];
+        printf_s("[*] Writing offsets to: %ls\n", OffsetsPath.c_str());
+    }
+    else
+    {
+        printf_s("[-] Failed to create config file: %ls (Error: %d)\n", OffsetsPath.c_str(), GetLastError());
+    }
 
-        printf_s("[*] Processing PDB %ls file...\n", PdbPath.c_str());
+    for (int i = 1; i < argc; i += 3)
+    {
+        std::filesystem::path InputPath(argv[i]);
+        std::filesystem::path PDBPath = std::filesystem::current_path() / "Symbols" / InputPath.filename();
+        bool FileExists = std::filesystem::exists(InputPath);
 
-        if (!std::filesystem::exists(PdbPath))
+        printf_s("[*] Processing PDB %ls file...\n", (FileExists ? InputPath.filename().c_str() : InputPath.c_str()));
+
+        if (!FileExists && !std::filesystem::exists(PDBPath))
         {
             printf_s("[!] File not found, search for matching pattern...\n");
 
-            PdbPath = FindPdbFileByBaseName(argv[i]);
+            PDBPath = FindPdbFileByBaseName(argv[i]);
 
-            if (PdbPath.empty())
+            if (PDBPath.empty())
             {
                 printf_s("[-] File not found: %ls\n\n", argv[i]);
 
@@ -102,24 +120,24 @@ int wmain(int argc, wchar_t* argv[])
                 continue;
             }
 
-            printf_s("[+] Found matching PDB file: %ls\n", PdbPath.c_str());
+            printf_s("[+] Found matching PDB file: %ls\n", PDBPath.c_str());
         }
 
-        std::vector<std::wstring> SymbolNames = SplitSymbols(argv[i + 1]);
+        std::vector<std::wstring> SymbolNames = SplitSymbols(argv[i + 2]);
 
         if (SymbolNames.empty())
         {
-            printf_s("[-] No valid symbols for %ls\n\n", PdbPath.c_str());
+            printf_s("[-] No valid symbols for %ls\n\n", PDBPath.c_str());
 
             AllSuccess = false;
 
             continue;
         }
 
-        DWORD FileSize = static_cast<DWORD>(std::filesystem::file_size(PdbPath.c_str()));
+        DWORD FileSize = static_cast<DWORD>(std::filesystem::file_size(PDBPath.c_str()));
 
         DWORD64 BaseAddr = 0x40000;
-        DWORD64 ModBase = SymLoadModuleExW(GetCurrentProcess(), NULL, PdbPath.c_str(), NULL, BaseAddr,
+        DWORD64 ModBase = SymLoadModuleExW(GetCurrentProcess(), NULL, PDBPath.c_str(), NULL, BaseAddr,
             FileSize, NULL, 0);
 
         if (ModBase == 0)
@@ -135,7 +153,8 @@ int wmain(int argc, wchar_t* argv[])
         SymInfoPackage.si.SizeOfStruct = sizeof(SYMBOL_INFOW);
         SymInfoPackage.si.MaxNameLen = sizeof(SymInfoPackage.name);
 
-        bool FileSuccess = true;
+        bool bIsFileSuccess = true;
+        bool bIsSectionWritten = false;
 
         for (const std::wstring& Sym : SymbolNames)
         {
@@ -145,7 +164,7 @@ int wmain(int argc, wchar_t* argv[])
             {
                 printf_s("[-] Symbol '%ls' not found! :( Code: 0x%X\n\n", Sym.c_str(), GetLastError());
 
-                FileSuccess = false;
+                bIsFileSuccess = false;
 
                 continue;
             }
@@ -154,12 +173,28 @@ int wmain(int argc, wchar_t* argv[])
 
             printf_s("[+] Found symbol '%ls' -> Offset: %I64u | RVA: 0x%I64x\n", Sym.c_str(),
                 Offset, SymInfoPackage.si.Address);
+
+            if (!OffsetsFile)
+                continue;
+
+            if (!bIsSectionWritten)
+            {
+                if (!bIsFirstSection)
+                    fwprintf_s(OffsetsFile, L"\n");
+
+                fwprintf(OffsetsFile, L"[%ls]\n", std::filesystem::path(argv[i + 1]).filename().c_str());
+
+                bIsSectionWritten = true;
+                bIsFirstSection = false;
+            }
+
+            fwprintf(OffsetsFile, L"%ls=%I64u\n", Sym.c_str(), Offset);
         }
 
         printf_s("\n");
         SymUnloadModule64(GetCurrentProcess(), ModBase);
 
-        if (!FileSuccess)
+        if (!bIsFileSuccess)
             AllSuccess = false;
     }
 
