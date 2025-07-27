@@ -76,7 +76,9 @@ A toolkit for working with PDB files (Program Database), used in Windows for deb
 - An internet connection is required for remote symbol operations.
 - Some operations (e.g., writing to system directories) may require administrator privileges.
 - Parsing results are saved to `offsets.ini` in the current directory.
-- Not every PE files can provide PDB or not any PDB could be downloaded
+- **Not all PE files contain PDB information** - only binaries compiled with debug information will have embedded PDB references.
+- **Not every PDB file is available on Microsoft's symbol server** - especially for custom applications, internal software, or stripped binaries.
+- The tools specifically look for CodeView debug information with "RSDS" signature (0x53445352) in the PE file.
 
 ---
 
