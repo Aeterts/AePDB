@@ -76,7 +76,7 @@ A toolkit for working with PDB files (Program Database), used in Windows for deb
 - An internet connection is required for remote symbol operations.
 - Some operations (e.g., writing to system directories) may require administrator privileges.
 - Parsing results are saved to `offsets.ini` in the current directory.
-- Not all PE files can provide PDB or not all PDB files could be downloaded
+- Not every PE files can provide PDB or not any PDB could be downloaded
 
 ---
 
