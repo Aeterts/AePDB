@@ -248,6 +248,11 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
+    std::filesystem::path SymbolsPath = std::filesystem::current_path() / L"Symbols";
+
+    if (!std::filesystem::exists(SymbolsPath))
+        std::filesystem::create_directory(SymbolsPath);
+
     std::wstring DownloaderCmd = L"AePDBDownloader.exe";
     std::wstring ParserCmd = L"AePDBParser.exe";
 
