@@ -229,10 +229,19 @@ int wmain(int argc, wchar_t* argv[])
 
     std::map<std::wstring, std::map<std::wstring, std::wstring>> UpdatedSections;
 
+    wchar_t CurrentExePath[MAX_PATH];
+
+    if (!GetModuleFileNameW(NULL, CurrentExePath, MAX_PATH))
+    {
+        wprintf_s(L"[-] GetModuleFileName failed! :( (Error: %d)\n", GetLastError());
+
+        return -1;
+    }
+
     for (int i = 1; i < argc; i += 3)
     {
         std::filesystem::path InputPath(argv[i]);
-        std::filesystem::path PDBPath = std::filesystem::current_path() / "Symbols" / InputPath.filename();
+        std::filesystem::path PDBPath = std::filesystem::path(CurrentExePath).parent_path() / L"Symbols" / InputPath.filename();
         bool FileExists = std::filesystem::exists(InputPath);
 
         printf_s("[*] Processing PDB %ls file...\n", (FileExists ? InputPath.filename().c_str() : InputPath.c_str()));
@@ -316,16 +325,9 @@ int wmain(int argc, wchar_t* argv[])
             AllSuccess = false;
     }
 
-    if (!UpdatedSections.empty())
-    {
-        if (!UpdateIniSections(L"offsets.ini", UpdatedSections))
-            printf_s("[-] Failed to update offsets.ini! :(\n");
-    }
-    else
-    {
-        printf_s("[+] All offsets is up to date!\n");
-    }
-
+    printf_s("%s\n", UpdatedSections.empty() ? "[+] All offsets is up to date!" :
+        (UpdateIniSections(std::filesystem::path(CurrentExePath).parent_path() / L"offsets.ini", UpdatedSections) ?
+            "[+] All offsets saved to offsets.ini!" : "[-] Failed to update offsets.ini! :("));
     SymCleanup(GetCurrentProcess());
 
     int FinalResult;

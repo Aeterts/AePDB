@@ -45,26 +45,21 @@ void CleanupResources(void* pBase, HANDLE hMapping, HANDLE hFile)
         CloseHandle(hFile);
 }
 
-std::wstring FindPdbFileByBaseName(const std::wstring& PdbPath)
+std::wstring FindPdbFileByBaseName(const std::filesystem::path& SymbolsPath, const std::wstring& PdbPath)
 {
     std::filesystem::path Path(PdbPath);
-    std::wstring BaseName = Path.stem().wstring();
-    std::filesystem::path Dir = Path.parent_path();
+    std::wstring BaseName = Path.stem();
 
-    if (Dir.empty())
-        Dir = std::filesystem::current_path() / L"Symbols";
-
-    for (const auto& entry : std::filesystem::directory_iterator(Dir))
+    for (const auto& Entry : std::filesystem::directory_iterator(Path.has_parent_path() ? Path.parent_path() : SymbolsPath))
     {
-        if (entry.is_regular_file())
+        if (Entry.is_regular_file())
         {
-            std::wstring fileName = entry.path().filename().wstring();
+            std::wstring FileName = Entry.path().filename();
 
-            if (fileName.size() > BaseName.size() + 1 &&
-                fileName.substr(0, BaseName.size() + 1) == BaseName + L"_" &&
-                _wcsicmp(fileName.substr(fileName.size() - 4).c_str(), L".pdb") == 0)
+            if (FileName.size() > BaseName.size() + 1 && FileName.substr(0, BaseName.size() + 1) == BaseName + L"_" &&
+                _wcsicmp(FileName.substr(FileName.size() - 4).c_str(), L".pdb") == 0)
             {
-                return entry.path().wstring();
+                return Entry.path();
             }
         }
     }
@@ -72,7 +67,7 @@ std::wstring FindPdbFileByBaseName(const std::wstring& PdbPath)
     return L"";
 }
 
-int HandleFile(const std::filesystem::path& FilePath, std::wstring& NewPDBName, std::vector<std::wstring>& OldFiles)
+int HandleFile(const std::filesystem::path& SymbolsPath, const std::filesystem::path& FilePath, std::wstring& NewPDBName, std::vector<std::wstring>& OldFiles)
 {
     if (!std::filesystem::exists(FilePath))
     {
@@ -210,14 +205,14 @@ int HandleFile(const std::filesystem::path& FilePath, std::wstring& NewPDBName, 
 
     std::wstring FileName = GenerateFileName(PDBFileName, FullHex);
 
-    std::filesystem::path PDBPath = std::filesystem::current_path() / L"Symbols" / FileName;
+    std::filesystem::path PDBPath = SymbolsPath / FileName;
 
     NewPDBName = FileName;
 
     if (std::filesystem::exists(PDBPath))
         return 0;
 
-    std::filesystem::path DownloadedPDBPath = FindPdbFileByBaseName(std::wstring(PDBFileName.begin(), PDBFileName.end()));
+    std::filesystem::path DownloadedPDBPath = FindPdbFileByBaseName(SymbolsPath, std::wstring(PDBFileName.begin(), PDBFileName.end()));
     std::wstring DownloadedPDBName = DownloadedPDBPath.filename();
 
     if (DownloadedPDBName.empty())
@@ -248,13 +243,25 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    std::filesystem::path SymbolsPath = std::filesystem::current_path() / L"Symbols";
+    wchar_t CurrentExePath[MAX_PATH];
+
+    if (!GetModuleFileNameW(NULL, CurrentExePath, MAX_PATH))
+    {
+        wprintf_s(L"[-] GetModuleFileName failed! :( (Error: %d)\n", GetLastError());
+
+        return -1;
+    }
+
+    std::filesystem::path AePDBDir(CurrentExePath);
+    AePDBDir = AePDBDir.parent_path();
+
+    std::filesystem::path SymbolsPath = AePDBDir / L"Symbols";
 
     if (!std::filesystem::exists(SymbolsPath))
         std::filesystem::create_directory(SymbolsPath);
 
-    std::wstring DownloaderCmd = L"AePDBDownloader.exe";
-    std::wstring ParserCmd = L"AePDBParser.exe";
+    std::wstring DownloaderCmd = AePDBDir / L"AePDBDownloader.exe";
+    std::wstring ParserCmd = AePDBDir / L"AePDBParser.exe";
 
     std::vector<std::wstring> OldFiles;
 
@@ -266,7 +273,7 @@ int wmain(int argc, wchar_t* argv[])
 
         std::wstring NewPDBName;
 
-        int CheckCode = HandleFile(PEPath, NewPDBName, OldFiles);
+        int CheckCode = HandleFile(SymbolsPath, PEPath, NewPDBName, OldFiles);
         bool bUpdateCmd = false;
 
         switch (CheckCode)
@@ -287,13 +294,17 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     if (!bNeedUpdate)
+    {
+        printf_s("\n------\n\n");
+
         return 0;
+    }
 
     int DownloadResult = _wsystem(DownloaderCmd.c_str());
 
     if (DownloadResult != 0 && !OldFiles.empty())
     {
-        printf_s("[-] Update faild while downloading, old files will not be removed! Code: %d :(\n", DownloadResult);
+        printf_s("[-] Update faild while downloading, old files will not be removed! :( Code: %d\n", DownloadResult);
 
         return DownloadResult;
     }
@@ -315,7 +326,7 @@ int wmain(int argc, wchar_t* argv[])
         printf_s("\n[+] Successfully updated!\n");
     }
 
-    printf("------\n");
+    printf("------\n\n");
 
     return ParseResult;
 }
