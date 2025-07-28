@@ -300,7 +300,22 @@ int wmain(int argc, wchar_t* argv[])
         return 0;
     }
 
-    int DownloadResult = _wsystem(DownloaderCmd.c_str());
+    STARTUPINFOW DownloaderSi = { sizeof(DownloaderSi) };
+    PROCESS_INFORMATION DownloaderPi = { 0 };
+
+    if (!CreateProcessW(NULL, &DownloaderCmd[0], NULL, NULL, FALSE, 0, NULL, NULL, &DownloaderSi, &DownloaderPi))
+    {
+        wprintf_s(L"[-] CreateProcess failed (Error: %d)\n", GetLastError());
+
+        return false;
+    }
+
+    DWORD DownloadResult;
+
+    WaitForSingleObject(DownloaderPi.hProcess, INFINITE);
+    GetExitCodeProcess(DownloaderPi.hProcess, &DownloadResult);
+    CloseHandle(DownloaderPi.hProcess);
+    CloseHandle(DownloaderPi.hThread);
 
     if (DownloadResult != 0 && !OldFiles.empty())
     {
@@ -315,7 +330,22 @@ int wmain(int argc, wchar_t* argv[])
         std::filesystem::remove(OldFile);
     }
 
-    int ParseResult = _wsystem(ParserCmd.c_str());
+    STARTUPINFOW ParserSi = { sizeof(ParserSi) };
+    PROCESS_INFORMATION ParserPi = { 0 };
+
+    if (!CreateProcessW(NULL, &ParserCmd[0], NULL, NULL, FALSE, 0, NULL, NULL, &ParserSi, &ParserPi))
+    {
+        wprintf_s(L"[-] CreateProcess failed (Error: %d)\n", GetLastError());
+
+        return false;
+    }
+
+    DWORD ParseResult;
+
+    WaitForSingleObject(ParserPi.hProcess, INFINITE);
+    GetExitCodeProcess(ParserPi.hProcess, &ParseResult);
+    CloseHandle(ParserPi.hProcess);
+    CloseHandle(ParserPi.hThread);
 
     if (ParseResult != 0)
     {
